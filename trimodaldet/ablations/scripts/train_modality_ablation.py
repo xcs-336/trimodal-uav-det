@@ -141,12 +141,17 @@ class Logger:
         """Log batch-level metrics with detailed loss components."""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        # Extract individual loss components
-        total_loss = sum(loss for loss in loss_dict.values())
-        loss_classifier = loss_dict.get('loss_classifier', 0.0)
-        loss_box_reg = loss_dict.get('loss_box_reg', 0.0)
-        loss_objectness = loss_dict.get('loss_objectness', 0.0)
-        loss_rpn_box_reg = loss_dict.get('loss_rpn_box_reg', 0.0)
+        # Extract individual loss components and convert tensors to scalars
+        def to_scalar(val):
+            if isinstance(val, torch.Tensor):
+                return val.item()
+            return float(val)
+
+        total_loss = sum(to_scalar(loss) for loss in loss_dict.values())
+        loss_classifier = to_scalar(loss_dict.get('loss_classifier', 0.0))
+        loss_box_reg = to_scalar(loss_dict.get('loss_box_reg', 0.0))
+        loss_objectness = to_scalar(loss_dict.get('loss_objectness', 0.0))
+        loss_rpn_box_reg = to_scalar(loss_dict.get('loss_rpn_box_reg', 0.0))
 
         with open(self.batch_csv, 'a', newline='') as f:
             writer = csv.writer(f)
@@ -215,6 +220,18 @@ class ModalityAblationTrainer:
             momentum=0.9,
             weight_decay=0.0001
         )
+
+        # AMP (Automatic Mixed Precision) support
+        self.use_amp = getattr(config, 'use_amp', False)
+        self.grad_accumulation_steps = getattr(config, 'grad_accumulation_steps', 1)
+        if self.use_amp:
+            self.scaler = torch.amp.GradScaler('cuda')
+            self.logger.log("AMP (Automatic Mixed Precision) enabled.")
+        else:
+            self.scaler = None
+
+        if self.grad_accumulation_steps > 1:
+            self.logger.log(f"Gradient accumulation enabled: {self.grad_accumulation_steps} steps")
 
         # Track training
         self.start_time = None
@@ -321,7 +338,7 @@ class ModalityAblationTrainer:
         return train_loader, test_loader
 
     def train_epoch(self, epoch):
-        """Train for one epoch."""
+        """Train for one epoch with AMP and gradient accumulation."""
         self.model.train()
         epoch_loss = 0.0
         epoch_start = time.time()
@@ -335,16 +352,35 @@ class ModalityAblationTrainer:
             images = [img.to(self.device) for img in images]
             targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
 
-            # Forward pass
-            loss_dict = self.model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
+            # Forward pass with AMP support
+            if self.use_amp and self.scaler:
+                with torch.amp.autocast('cuda', enabled=True):
+                    loss_dict = self.model(images, targets)
+                    losses = sum(loss for loss in loss_dict.values())
+            else:
+                loss_dict = self.model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
 
-            # Backward pass
-            self.optimizer.zero_grad()
-            losses.backward()
-            self.optimizer.step()
+            # Scale loss for gradient accumulation
+            if self.grad_accumulation_steps > 1:
+                losses = losses / self.grad_accumulation_steps
 
-            epoch_loss += losses.item()
+            # Backward pass with AMP support
+            if self.use_amp and self.scaler:
+                self.scaler.scale(losses).backward()
+            else:
+                losses.backward()
+
+            # Update weights only every accumulation_steps batches
+            if (i + 1) % self.grad_accumulation_steps == 0 or (i + 1) == len(self.train_loader):
+                if self.use_amp and self.scaler:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+                self.optimizer.zero_grad()
+
+            epoch_loss += losses.item() * self.grad_accumulation_steps
             batch_time = time.time() - batch_start
             batch_times.append(batch_time)
 
@@ -358,7 +394,7 @@ class ModalityAblationTrainer:
 
                 self.logger.log(
                     f"  Batch [{i+1}/{len(self.train_loader)}] | "
-                    f"Total Loss: {losses.item():.4f} | "
+                    f"Total Loss: {losses.item() * self.grad_accumulation_steps:.4f} | "
                     f"{loss_details} | "
                     f"LR: {lr:.5f} | "
                     f"Time: {avg_batch_time:.2f}s/batch"
@@ -564,6 +600,12 @@ def main():
     parser.add_argument('--batch-size', type=int, default=16, help='Batch size')
     parser.add_argument('--lr', type=float, default=0.02, help='Learning rate')
 
+    # AMP and gradient accumulation
+    parser.add_argument('--use-amp', action='store_true', default=False,
+                        help='Enable Automatic Mixed Precision (AMP) training')
+    parser.add_argument('--grad-accumulation-steps', type=int, default=1,
+                        help='Gradient accumulation steps (1 = disabled)')
+
     # Modality-specific args
     parser.add_argument('--modalities', type=str, default='rgb,thermal,event',
                         help='Comma-separated list of active modalities (e.g., "rgb,thermal" or "rgb,event")')
@@ -593,6 +635,8 @@ def main():
     config.epochs = args.epochs
     config.batch_size = args.batch_size
     config.lr = args.lr
+    config.use_amp = args.use_amp
+    config.grad_accumulation_steps = args.grad_accumulation_steps
 
     # Log configuration
     config_dict = {
@@ -605,6 +649,8 @@ def main():
         'epochs': args.epochs,
         'batch_size': args.batch_size,
         'learning_rate': args.lr,
+        'use_amp': args.use_amp,
+        'grad_accumulation_steps': args.grad_accumulation_steps,
         'active_modalities': active_modalities,
         'modality_config': '+'.join(sorted(active_modalities)),
         'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
