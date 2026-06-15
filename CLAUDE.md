@@ -26,6 +26,10 @@ TriModalDet 是一个三模态（RGB + 热红外 + 事件相机）无人机目�
 | `trimodaldet/utils/timm_compat.py` | Timm 兼容性模块（DropPath / to_2tuple / trunc_normal_） |
 | `trimodaldet/ablations/backbone_modality.py` | 模态可配置 Backbone（消融实验） |
 | `trimodaldet/ablations/scripts/train_modality_ablation.py` | 模态消融训练脚本 |
+| `trimodaldet/ablations/scripts/test_modality_ablation.py` | 模态消融测试脚本（独立评估） |
+| `trimodaldet/training/monitor_utils.py` | 监控工具（资源分析、优化建议） |
+| `scripts/monitor.py` | 独立 ResourceMonitor（后台线程 + pynvml + psutil） |
+| `scripts/quick_test.py` | 快速训练验证（5 batch + 资源监控） |
 
 ## 模型架构
 
@@ -69,6 +73,13 @@ python trimodaldet/ablations/scripts/train_modality_ablation.py \
     --labels E:\dataset\CV\triair\data\labels \
     --epochs 15 --backbone mit_b1 --modalities rgb,thermal \
     --output-dir results/ablation_no_event
+
+# 消融模型测试（仅评估已训练模型）
+python trimodaldet/ablations/scripts/test_modality_ablation.py \
+    --data E:\dataset\CV\triair\data\images \
+    --labels E:\dataset\CV\triair\data\labels \
+    --backbone mit_b1 --modalities rgb,thermal \
+    --checkpoint results/ablation_no_event/model_best_weights.pth
 
 # 测试
 python scripts/test.py --data E:\dataset\CV\triair\data --model trimodaldet.pth
