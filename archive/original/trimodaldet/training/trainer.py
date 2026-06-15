@@ -77,14 +77,6 @@ class Trainer:
         self.total_steps = total_steps
         self.current_step = 0
 
-        # AMP (Automatic Mixed Precision) scaler
-        self.use_amp = getattr(config, 'use_amp', False)
-        if self.use_amp:
-            self.scaler = torch.amp.GradScaler('cuda')
-            print("AMP (Automatic Mixed Precision) enabled.")
-        else:
-            self.scaler = None
-
     def build_model(self):
         """Build the TriModalDet model."""
         config = self.config
@@ -136,48 +128,23 @@ class Trainer:
                   f"({self.config.max_gpu_mem_pct}%). Consider reducing batch_size.")
 
     def train_epoch(self, epoch):
-        """Train for one epoch with OOM protection and gradient accumulation."""
+        """Train for one epoch with OOM protection."""
         self.model.train()
         total_loss = 0
-        accumulation_steps = getattr(self.config, 'grad_accumulation_steps', 1)
-        effective_batch = self.config.batch_size * accumulation_steps
-
-        if accumulation_steps > 1:
-            print(f"Gradient accumulation enabled: {accumulation_steps} steps "
-                  f"(effective batch size = {effective_batch})")
 
         for i, (images, targets) in enumerate(self.train_loader):
             images = list(image.to(self.config.device) for image in images)
             targets = [{k: v.to(self.config.device) for k, v in t.items()} for t in targets]
 
             try:
-                # Forward pass with AMP support
-                if self.use_amp and self.scaler:
-                    with torch.amp.autocast('cuda', enabled=True):
-                        loss_dict = self.model(images, targets)
-                        losses = sum(loss for loss in loss_dict.values())
-                else:
-                    loss_dict = self.model(images, targets)
-                    losses = sum(loss for loss in loss_dict.values())
+                # Forward pass
+                loss_dict = self.model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
 
-                # Scale loss for gradient accumulation
-                if accumulation_steps > 1:
-                    losses = losses / accumulation_steps
-
-                # Backward pass with AMP support
-                if self.use_amp and self.scaler:
-                    self.scaler.scale(losses).backward()
-                else:
-                    losses.backward()
-
-                # Update weights only every accumulation_steps batches
-                if (i + 1) % accumulation_steps == 0 or (i + 1) == len(self.train_loader):
-                    if self.use_amp and self.scaler:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        self.optimizer.step()
-                    self.optimizer.zero_grad()
+                # Backward pass
+                self.optimizer.zero_grad()
+                losses.backward()
+                self.optimizer.step()
             except RuntimeError as e:
                 if 'out of memory' in str(e).lower() or 'CUDA' in str(e):
                     print(f"\n[ERROR] CUDA Out of Memory at batch {i+1}")
@@ -189,11 +156,10 @@ class Trainer:
                     except Exception:
                         pass
                     print(f"  Current batch_size: {self.config.batch_size}")
-                    print(f"  Accumulation steps: {accumulation_steps}")
-                    print(f"  Suggestion: reduce batch_size or accumulation_steps and restart training.")
+                    print(f"  Suggestion: reduce batch_size by half and restart training.")
                     raise CudaOutOfMemoryError(
-                        f"CUDA OOM at batch {i+1}. Current batch_size={self.config.batch_size}, "
-                        f"accumulation_steps={accumulation_steps}. Reduce batch_size or accumulation_steps and restart."
+                        f"CUDA OOM at batch {i+1}. Current batch_size={self.config.batch_size}. "
+                        f"Reduce batch_size and restart."
                     ) from e
                 else:
                     raise
@@ -209,13 +175,13 @@ class Trainer:
                 # Cosine annealing after warmup
                 self.scheduler.step()
 
-            total_loss += losses.item() * accumulation_steps
+            total_loss += losses.item()
 
             if (i + 1) % 10 == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 print(f"  Epoch [{epoch+1}/{self.config.num_epochs}], "
                       f"Step [{i+1}/{len(self.train_loader)}], "
-                      f"Loss: {losses.item() * accumulation_steps:.4f}, LR: {current_lr:.6f}")
+                      f"Loss: {losses.item():.4f}, LR: {current_lr:.6f}")
 
             # Periodic GPU memory check
             if (i + 1) % self.config.check_interval_batches == 0:
