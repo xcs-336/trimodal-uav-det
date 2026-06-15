@@ -207,15 +207,31 @@ def process_sequence(seq_dir, output_dir, modalities=('rgb', 'ir', 'event', 'fus
                 with open(label_path, 'w') as f:
                     f.writelines(yolo_lines)
 
-        # Export IR labels (YOLO format - boxes are in IR 512p coordinates)
+        # Export IR labels (YOLO format - boxes are in IR 512p coordinates,
+        # but IR image is center-cropped to 360p)
+        # IR: 640×512 → crop center 360 rows → 640×360
+        # top = (512 - 360) // 2 = 76, so y_offset = 76
+        ir_crop_top = (512 - rgb.shape[0]) // 2 if ir is not None else 0
         if frame_num in ir_annotations:
             yolo_lines = []
             for mot_line in ir_annotations[frame_num]:
-                # IR boxes are in 512p coordinates
-                # After cropping to 360p, we need to adjust y coordinates
-                yolo_line = mot_to_yolo(mot_line, 640, 512)
-                if yolo_line:
-                    yolo_lines.append(yolo_line)
+                parts = mot_line.strip().split(',')
+                if len(parts) < 6:
+                    continue
+                # Adjust bb_top for center crop (subtract the top offset)
+                bb_left = float(parts[2])
+                bb_top = float(parts[3]) - ir_crop_top  # Adjust for crop
+                bb_width = float(parts[4])
+                bb_height = float(parts[5])
+                class_id = int(parts[7]) if len(parts) > 7 else 0
+                if class_id != 0:
+                    continue
+                # Convert to YOLO normalized format (using cropped dimensions 640×360)
+                x_center = (bb_left + bb_width / 2) / 640
+                y_center = (bb_top + bb_height / 2) / 360
+                w = bb_width / 640
+                h = bb_height / 360
+                yolo_lines.append(f"0 {x_center:.6f} {y_center:.6f} {w:.6f} {h:.6f}\n")
             if yolo_lines:
                 label_path = os.path.join(output_dir, 'labels_ir', f'{img_id}.txt')
                 with open(label_path, 'w') as f:
@@ -236,10 +252,8 @@ def main():
 
     # Create output directories
     os.makedirs(os.path.join(args.output, 'images'), exist_ok=True)
-    if 'rgb' in modalities:
-        os.makedirs(os.path.join(args.output, 'labels_rgb'), exist_ok=True)
-    if 'ir' in modalities:
-        os.makedirs(os.path.join(args.output, 'labels_ir'), exist_ok=True)
+    os.makedirs(os.path.join(args.output, 'labels_rgb'), exist_ok=True)
+    os.makedirs(os.path.join(args.output, 'labels_ir'), exist_ok=True)
 
     # Find all sequences
     seqs = sorted([d for d in os.listdir(args.input)
