@@ -8,6 +8,7 @@ from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.ops import MultiScaleRoIAlign
 
 from ..models.encoder import get_encoder
+from ..models.encoder_stn import get_encoder_stn
 from ..models.backbone import InterModalBackbone
 from ..data.dataset import NpyYoloDataset, collate_fn
 from .monitor_utils import get_gpu_memory_stats
@@ -91,11 +92,21 @@ class Trainer:
 
         # Instantiate the Multi-modal encoder using selected backbone
         print(f"Using backbone: {config.backbone_type}")
-        encoder_base = get_encoder(
-            config.backbone_type,
-            in_chans_rgb=config.in_chans_rgb,
-            in_chans_x=config.in_chans_x
-        )
+        if '_stn' in config.backbone_type:
+            encoder_base = get_encoder_stn(
+                config.backbone_type,
+                in_chans_rgb=config.in_chans_rgb,
+                in_chans_x=config.in_chans_x,
+                stn_reduction=config.stn_reduction,
+                stn_enabled_stages=config.stn_enabled_stages,
+            )
+            print(f"  STN reduction: {config.stn_reduction}, stages: {config.stn_enabled_stages}")
+        else:
+            encoder_base = get_encoder(
+                config.backbone_type,
+                in_chans_rgb=config.in_chans_rgb,
+                in_chans_x=config.in_chans_x
+            )
 
         # Wrap with FPN
         backbone = InterModalBackbone(encoder_base, fpn_out_channels=config.fpn_out_channels)

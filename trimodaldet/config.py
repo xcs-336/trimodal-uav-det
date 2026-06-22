@@ -55,6 +55,8 @@ class Config:
 
         # Backbone configuration
         self.backbone_type = 'mit_b1'  # SegFormer MiT-B1
+        self.stn_reduction = 32        # STN regressor bottleneck ratio
+        self.stn_enabled_stages = None  # None = all 4 stages
 
         # Anchor generator
         self.anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
@@ -100,6 +102,11 @@ class Config:
         # AMP (Automatic Mixed Precision)
         self.use_amp = False
 
+        # STN alignment configuration
+        self.stn_enabled = False   # set automatically based on backbone suffix
+        self.stn_reduction = 32
+        self.stn_enabled_stages = None  # None = all stages
+
     @classmethod
     def from_args(cls):
         """Create config from command line arguments."""
@@ -115,9 +122,11 @@ class Config:
 
         # Model arguments
         parser.add_argument("--backbone", type=str, default='mit_b1',
-                          choices=['mit_b0', 'mit_b1', 'mit_b2', 'mit_b3', 'mit_b4'],
+                          choices=['mit_b0', 'mit_b1', 'mit_b2', 'mit_b3', 'mit_b4',
+                                   'mit_b0_stn', 'mit_b1_stn', 'mit_b2_stn', 'mit_b3_stn', 'mit_b4_stn'],
                           help="Backbone variant: mit_b0 (smallest/fastest), mit_b1 (default), "
-                               "mit_b2 (base), mit_b3 (medium), mit_b4 (large)")
+                               "mit_b2 (base), mit_b3 (medium), mit_b4 (large). "
+                               "Append _stn for STN-aligned variant.")
 
         # Training arguments
         parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs")
@@ -127,6 +136,12 @@ class Config:
                           help="Gradient accumulation steps (1 = disabled)")
         parser.add_argument("--use-amp", action="store_true", default=False,
                           help="Enable Automatic Mixed Precision (AMP) training")
+
+        # STN configuration
+        parser.add_argument("--stn-reduction", type=int, default=32,
+                          help="STN regressor channel reduction ratio (default: 32)")
+        parser.add_argument("--stn-stages", type=str, default=None,
+                          help="Comma-separated STN stages, e.g. '0,1,2,3' (default: all)")
 
         # Monitoring arguments
         parser.add_argument("--monitor-interval", type=float, default=5.0,
@@ -176,6 +191,11 @@ class Config:
 
         # AMP
         config.use_amp = args.use_amp
+
+        # STN
+        config.stn_reduction = args.stn_reduction
+        if args.stn_stages is not None:
+            config.stn_enabled_stages = [int(s.strip()) for s in args.stn_stages.split(',')]
 
         config.args = args
         return config
